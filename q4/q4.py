@@ -320,8 +320,8 @@ class CompositePath:
 		th_vals = [thb + i * 0.05 for i in range(0, 400)]  # 往外 20 弧度
 		xin, yin = zip(*[spiral_point(th, self.B) for th in th_vals])
 		xout, yout = zip(*[(-x, -y) for x, y in zip(xin, yin)])
-		ax.plot(xin, yin, color='tab:red', lw=1, label='盘入螺线')
-		ax.plot(xout, yout, color='tab:blue', lw=1, label='盘出螺线')
+		ax.plot(xin, yin, color='tab:red', lw=1, label='In-spiral')
+		ax.plot(xout, yout, color='tab:blue', lw=1, label='Out-spiral')
 		# 两圆弧
 		# 先行大圆弧（R1=2a）
 		ang_s1 = TurnGeometry._angle(self.tg.C1[0], self.tg.C1[1], self.tg.Pin[0], self.tg.Pin[1])
@@ -329,7 +329,7 @@ class CompositePath:
 		angs1 = [ang_s1 + self.tg.arc1_dtheta * t for t in [i / 100.0 for i in range(101)]]
 		x1 = [self.tg.C1[0] + self.tg.R1 * math.cos(a) for a in angs1]
 		y1 = [self.tg.C1[1] + self.tg.R1 * math.sin(a) for a in angs1]
-		ax.plot(x1, y1, color='k', lw=1.8, label='圆弧1(2a)')
+		ax.plot(x1, y1, color='k', lw=1.8, label='Arc1(2a)')
 		# 后续小圆弧（R2=a）
 		ang_s2 = TurnGeometry._angle(self.tg.C2[0], self.tg.C2[1], self.tg.M[0], self.tg.M[1])
 		ang_e2 = TurnGeometry._angle(self.tg.C2[0], self.tg.C2[1], self.tg.Pout[0], self.tg.Pout[1])
@@ -462,53 +462,139 @@ def compute_one_time(path: CompositePath, t: int) -> Dict:
 
 def export_q4(df: pd.DataFrame, path_all: str, path_tables: str) -> None:
 	df = df.sort_values(["t", "index"]).reset_index(drop=True)
-	# 主表安全保存（若被占用则另名）
-	def _safe_write(path: str):
+	
+	print("[导出] 开始生成横向表格格式...")
+	
+	# 获取所有时刻和节点
+	all_times = sorted(df.t.unique())
+	all_indices = sorted(df.index.unique())
+	handle_names_list = handle_names()
+	
+	print(f"[导出] 处理 {len(all_indices)} 个节点，{len(all_times)} 个时刻")
+	
+	# 使用透视表方式快速生成横向数据
+	df_pivot_x = df.pivot_table(index='index', columns='t', values='x', fill_value='')
+	df_pivot_y = df.pivot_table(index='index', columns='t', values='y', fill_value='')
+	df_pivot_speed = df.pivot_table(index='index', columns='t', values='speed', fill_value='')
+	
+	print("[导出] 生成位置表...")
+	# 位置表：交替x,y行
+	pos_data = []
+	for idx in all_indices:
+		name = handle_names_list[idx] if idx < len(handle_names_list) else f"节点{idx}"
+		
+		# x坐标行
+		row_x = {"": f"{name}x (m)"}
+		for t in all_times:
+			val = df_pivot_x.loc[idx, t] if (idx in df_pivot_x.index and t in df_pivot_x.columns) else ''
+			row_x[f"{t} s"] = round(val, 6) if val != '' else ''
+		pos_data.append(row_x)
+		
+		# y坐标行
+		row_y = {"": f"{name}y (m)"}
+		for t in all_times:
+			val = df_pivot_y.loc[idx, t] if (idx in df_pivot_y.index and t in df_pivot_y.columns) else ''
+			row_y[f"{t} s"] = round(val, 6) if val != '' else ''
+		pos_data.append(row_y)
+	
+	print("[导出] 生成速度表...")
+	# 速度表
+	spd_data = []
+	for idx in all_indices:
+		name = handle_names_list[idx] if idx < len(handle_names_list) else f"节点{idx}"
+		
+		row_spd = {"": f"{name} (m/s)"}
+		for t in all_times:
+			val = df_pivot_speed.loc[idx, t] if (idx in df_pivot_speed.index and t in df_pivot_speed.columns) else ''
+			row_spd[f"{t} s"] = round(val, 6) if val != '' else ''
+		spd_data.append(row_spd)
+	
+	print("[导出] 写入Excel文件...")
+	# 安全保存函数
+	def _safe_write(path: str, pos_data: List[Dict], spd_data: List[Dict]):
 		try:
 			with pd.ExcelWriter(path, engine="xlsxwriter") as w:
-				df.to_excel(w, index=False, sheet_name="full")
+				print(f"[导出] 写入位置表 ({len(pos_data)} 行)...")
+				pd.DataFrame(pos_data).to_excel(w, index=False, sheet_name="position")
+				print(f"[导出] 写入速度表 ({len(spd_data)} 行)...")
+				pd.DataFrame(spd_data).to_excel(w, index=False, sheet_name="speed")
+			print(f"[导出] 成功写入 {path}")
 			return path
 		except PermissionError:
 			base, ext = os.path.splitext(path)
 			alt = f"{base}_{time.strftime('%Y%m%d_%H%M%S')}{ext}"
 			with pd.ExcelWriter(alt, engine="xlsxwriter") as w:
-				df.to_excel(w, index=False, sheet_name="full")
+				pd.DataFrame(pos_data).to_excel(w, index=False, sheet_name="position")
+				pd.DataFrame(spd_data).to_excel(w, index=False, sheet_name="speed")
 			print(f"[提示] {os.path.basename(path)} 被占用，已另存为 {os.path.basename(alt)}")
 			return alt
-	_safe_write(path_all)
+		except Exception as e:
+			print(f"[错误] 写入Excel时出错: {e}")
+			raise
+	
+	# 保存主表为横向格式
+	_safe_write(path_all, pos_data, spd_data)
 
-	# 采样表
-	focus = [-100, -50, 0, 50, 100]
-	picks = [0, 1, 51, 101, 151, 201, LAST_INDEX]
-	nm = handle_names()
-	pos_rows, spd_rows = [], []
-	for idx in picks:
-		rp, rs = {"对象": nm[idx]}, {"对象": nm[idx]}
-		for tt in focus:
-			sub = df[(df.t == tt) & (df.index == idx)]
-			if len(sub) == 0:
-				continue
-			s = sub.iloc[0]
-			rp[f"{tt}s x(m)"] = round(s.x, 6)
-			rp[f"{tt}s y(m)"] = round(s.y, 6)
-			rs[f"{tt}s speed(m/s)"] = round(s.speed, 6)
-		pos_rows.append(rp)
-		spd_rows.append(rs)
+	
+	# 为了兼容原有的采样表，这里保留简化版本
 	try:
 		with pd.ExcelWriter(path_tables, engine="xlsxwriter") as w:
-			pd.DataFrame(pos_rows).to_excel(w, index=False, sheet_name="position")
-			pd.DataFrame(spd_rows).to_excel(w, index=False, sheet_name="speed")
+			# 只保存前20节的采样数据作为tables
+			focus_sample = [-100, -50, 0, 50, 100]
+			picks_sample = [0] + list(range(1, 21)) + [LAST_INDEX]
+			
+			pos_sample_rows = []
+			spd_sample_rows = []
+			
+			for idx in picks_sample:
+				name = handle_names_list[idx] if idx < len(handle_names_list) else f"节点{idx}"
+				
+				# 位置行
+				row_x = {"": f"{name}x (m)"}
+				row_y = {"": f"{name}y (m)"}
+				for tt in focus_sample:
+					sub = df[(df.t == tt) & (df.index == idx)]
+					if len(sub) > 0:
+						row_x[f"{tt} s"] = round(sub.iloc[0].x, 6)
+						row_y[f"{tt} s"] = round(sub.iloc[0].y, 6)
+					else:
+						row_x[f"{tt} s"] = ""
+						row_y[f"{tt} s"] = ""
+				pos_sample_rows.append(row_x)
+				pos_sample_rows.append(row_y)
+				
+				# 速度行
+				row_spd = {"": f"{name} (m/s)"}
+				for tt in focus_sample:
+					sub = df[(df.t == tt) & (df.index == idx)]
+					if len(sub) > 0:
+						row_spd[f"{tt} s"] = round(sub.iloc[0].speed, 6)
+					else:
+						row_spd[f"{tt} s"] = ""
+				spd_sample_rows.append(row_spd)
+			
+			pd.DataFrame(pos_sample_rows).to_excel(w, index=False, sheet_name="position_sample")
+			pd.DataFrame(spd_sample_rows).to_excel(w, index=False, sheet_name="speed_sample")
 	except PermissionError:
 		base, ext = os.path.splitext(path_tables)
 		alt = f"{base}_{time.strftime('%Y%m%d_%H%M%S')}{ext}"
 		with pd.ExcelWriter(alt, engine="xlsxwriter") as w:
-			pd.DataFrame(pos_rows).to_excel(w, index=False, sheet_name="position")
-			pd.DataFrame(spd_rows).to_excel(w, index=False, sheet_name="speed")
+			pd.DataFrame(pos_sample_rows).to_excel(w, index=False, sheet_name="position_sample")
+			pd.DataFrame(spd_sample_rows).to_excel(w, index=False, sheet_name="speed_sample")
 		print(f"[提示] {os.path.basename(path_tables)} 被占用，已另存为 {os.path.basename(alt)}")
 
 
 def visualize_times(path: CompositePath, times: List[int], out_dir: str) -> None:
 	os.makedirs(out_dir, exist_ok=True)
+	
+	# 设置中文字体，避免字体警告
+	try:
+		plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+		plt.rcParams['axes.unicode_minus'] = False
+	except:
+		# 如果设置字体失败，使用英文标题
+		pass
+	
 	# 合图
 	fig, axes = plt.subplots(1, len(times), figsize=(4 * len(times), 4), constrained_layout=True)
 	if len(times) == 1:
@@ -522,7 +608,8 @@ def visualize_times(path: CompositePath, times: List[int], out_dir: str) -> None
 		ax.plot(xs, ys, 'k.-', ms=2)
 		ax.plot(xs[0], ys[0], 'ro', ms=4)
 		ax.set_title(f"t={tt}s")
-	fig.suptitle("Q4 关键时刻整队连线", fontsize=12)
+	# 使用英文标题避免字体问题
+	fig.suptitle("Q4 Key Time Chain Visualization", fontsize=12)
 	fig.savefig(os.path.join(out_dir, "q4_key_times.png"), dpi=150)
 	plt.close(fig)
 	# 单张
