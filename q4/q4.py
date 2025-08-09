@@ -97,14 +97,18 @@ class TurnGeometry:
 				 sign_pair: Tuple[int, int]):
 		self.a = a
 		self.theta_b = theta_b
-		self.C1 = C1
-		self.C2 = C2
+		self.C1 = C1  # 先经过的大圆弧的圆心
+		self.C2 = C2  # 后经过的小圆弧的圆心
 		self.Pin = Pin
 		self.Pout = Pout
 		self.B = B
 		self.sign_pair = sign_pair
-		# 外切点
-		self.M = (C1[0] + (C2[0] - C1[0]) / 3.0, C1[1] + (C2[1] - C1[1]) / 3.0)
+		# 半径：先走大圆弧(2a)，再走小圆弧(a)
+		self.R1 = 2.0 * a
+		self.R2 = 1.0 * a
+		# 外切点：位于 C1->C2 方向，按 R1 : R2 = 2 : 1 分割，距离 C1 的比例为 R1/(R1+R2)=2/3
+		t = self.R1 / (self.R1 + self.R2)
+		self.M = (C1[0] + (C2[0] - C1[0]) * t, C1[1] + (C2[1] - C1[1]) * t)
 		# 预计算弧长与方向
 		self.L1 = None
 		self.L2 = None
@@ -121,15 +125,16 @@ class TurnGeometry:
 		return math.atan2(py - cy, px - cx)
 
 	def _precompute_arc_params(self) -> None:
-		# 圆1：C1, R=a，从 Pin 到 M
+		# 圆1：C1，R=2a，从 Pin 到 M
 		ang_s = self._angle(self.C1[0], self.C1[1], self.Pin[0], self.Pin[1])
 		ang_e = self._angle(self.C1[0], self.C1[1], self.M[0], self.M[1])
 		# 方向由与盘入切向一致确定
 		Tin = spiral_tangent_unit(self.theta_b, self.B)
 		rad = (self.Pin[0] - self.C1[0], self.Pin[1] - self.C1[1])
 		t_ccw = rotate_left(rad[0], rad[1])
-		t_ccw = (t_ccw[0] / self.a, t_ccw[1] / self.a)
-		# 在边界处，沿 s 增大是进入小圆弧，需与 -Tin 对齐
+		# 归一到 R1
+		t_ccw = (t_ccw[0] / self.R1, t_ccw[1] / self.R1)
+		# 在边界处，沿 s 增大是进入大圆弧，需与 -Tin 对齐
 		self.arc1_ccw = (t_ccw[0] * (-Tin[0]) + t_ccw[1] * (-Tin[1])) >= 0
 
 		def ang_delta(a1: float, a2: float, ccw: bool) -> float:
@@ -139,32 +144,32 @@ class TurnGeometry:
 		d1 = ang_delta(ang_s, ang_e, self.arc1_ccw)
 		self.arc1_start = ang_s
 		self.arc1_dtheta = d1
-		self.L1 = self.a * abs(d1)
+		self.L1 = self.R1 * abs(d1)
 
-		# 圆2：C2, R=2a，从 M 到 Pout；方向需与圆1在 M 处切向一致
+		# 圆2：C2, R=a，从 M 到 Pout；方向需与圆1在 M 处切向一致
 		ang2_s = self._angle(self.C2[0], self.C2[1], self.M[0], self.M[1])
 		ang2_e = self._angle(self.C2[0], self.C2[1], self.Pout[0], self.Pout[1])
 		# 圆1在 M 处的切向
 		rad1m = (self.M[0] - self.C1[0], self.M[1] - self.C1[1])
 		t1_ccw = rotate_left(rad1m[0], rad1m[1])
-		t1_ccw = (t1_ccw[0] / self.a, t1_ccw[1] / self.a)
+		t1_ccw = (t1_ccw[0] / self.R1, t1_ccw[1] / self.R1)
 		if not self.arc1_ccw:
 			t1_ccw = (-t1_ccw[0], -t1_ccw[1])
 		# 圆2在 M 处的逆时针切向
 		rad2m = (self.M[0] - self.C2[0], self.M[1] - self.C2[1])
 		t2_ccw = rotate_left(rad2m[0], rad2m[1])
-		t2_ccw = (t2_ccw[0] / (2 * self.a), t2_ccw[1] / (2 * self.a))
+		t2_ccw = (t2_ccw[0] / self.R2, t2_ccw[1] / self.R2)
 		self.arc2_ccw = (t2_ccw[0] * t1_ccw[0] + t2_ccw[1] * t1_ccw[1]) >= 0
 		d2 = ang_delta(ang2_s, ang2_e, self.arc2_ccw)
 		self.arc2_start = ang2_s
 		self.arc2_dtheta = d2
-		self.L2 = 2 * self.a * abs(d2)
+		self.L2 = self.R2 * abs(d2)
 
 	# 位姿 on arcs
 	def pos_on_arc1(self, s_local: float) -> Tuple[float, float]:
 		frac = max(0.0, min(1.0, s_local / max(self.L1, 1e-16)))
 		ang = self.arc1_start + frac * self.arc1_dtheta
-		return (self.C1[0] + self.a * math.cos(ang), self.C1[1] + self.a * math.sin(ang))
+		return (self.C1[0] + self.R1 * math.cos(ang), self.C1[1] + self.R1 * math.sin(ang))
 
 	def tan_on_arc1(self, s_local: float) -> Tuple[float, float]:
 		frac = max(0.0, min(1.0, s_local / max(self.L1, 1e-16)))
@@ -173,10 +178,9 @@ class TurnGeometry:
 		return t if self.arc1_ccw else (-t[0], -t[1])
 
 	def pos_on_arc2(self, s_local: float) -> Tuple[float, float]:
-		R = 2 * self.a
 		frac = max(0.0, min(1.0, s_local / max(self.L2, 1e-16)))
 		ang = self.arc2_start + frac * self.arc2_dtheta
-		return (self.C2[0] + R * math.cos(ang), self.C2[1] + R * math.sin(ang))
+		return (self.C2[0] + self.R2 * math.cos(ang), self.C2[1] + self.R2 * math.sin(ang))
 
 	def tan_on_arc2(self, s_local: float) -> Tuple[float, float]:
 		frac = max(0.0, min(1.0, s_local / max(self.L2, 1e-16)))
@@ -213,7 +217,8 @@ def search_min_turn(theta_b: float, B: float) -> Tuple[TurnGeometry, float]:
 	R = R_TURN
 	dotRN = Pin[0] * Nin[0] + Pin[1] * Nin[1]
 	for s1, s2 in [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]:
-		k = s1 + 2 * s2
+		# 由新的定义（先 2a 再 a），推导得到 | -2Pin - (2*s1 + s2)a Nin | = 3a
+		k = 2 * s1 + s2
 		# 由 | -2Pin - k a Nin | = 3a 推得：(k^2-9)a^2 + 4k(dotRN)a + 4R^2 = 0
 		A = (k * k - 9.0)
 		Bq = 4.0 * k * dotRN
@@ -235,12 +240,13 @@ def search_min_turn(theta_b: float, B: float) -> Tuple[TurnGeometry, float]:
 					if aa > 1e-8:
 						a_solutions.append(aa)
 		for a in a_solutions:
-			C1 = (Pin[0] + s1 * a * Nin[0], Pin[1] + s1 * a * Nin[1])
-			C2 = (-Pin[0] - s2 * 2 * a * Nin[0], -Pin[1] - s2 * 2 * a * Nin[1])
+			# 先经过大圆弧(2a)的圆心 C1；再经过小圆弧(a)的圆心 C2
+			C1 = (Pin[0] + s1 * 2 * a * Nin[0], Pin[1] + s1 * 2 * a * Nin[1])
+			C2 = (-Pin[0] - s2 * a * Nin[0], -Pin[1] - s2 * a * Nin[1])
 			tg = TurnGeometry(a, theta_b, C1, C2, Pin, Pout, B, (s1, s2))
 			# 只要求采样点都在调头区内
-			ok1 = _arc_inside_turning_area(C1, a, tg.Pin, tg.M, tg.arc1_ccw)
-			ok2 = _arc_inside_turning_area(C2, 2 * a, tg.M, tg.Pout, tg.arc2_ccw)
+			ok1 = _arc_inside_turning_area(C1, 2 * a, tg.Pin, tg.M, tg.arc1_ccw)
+			ok2 = _arc_inside_turning_area(C2, 1 * a, tg.M, tg.Pout, tg.arc2_ccw)
 			if ok1 and ok2 and tg.L1 > 1e-8 and tg.L2 > 1e-8:
 				candidates.append((tg, a))
 				print(f"[候选] 符号({s1},{s2}) a={a:.6f} L1={tg.L1:.6f} L2={tg.L2:.6f}")
@@ -317,20 +323,19 @@ class CompositePath:
 		ax.plot(xin, yin, color='tab:red', lw=1, label='盘入螺线')
 		ax.plot(xout, yout, color='tab:blue', lw=1, label='盘出螺线')
 		# 两圆弧
-		# 小圆
+		# 先行大圆弧（R1=2a）
 		ang_s1 = TurnGeometry._angle(self.tg.C1[0], self.tg.C1[1], self.tg.Pin[0], self.tg.Pin[1])
 		ang_e1 = TurnGeometry._angle(self.tg.C1[0], self.tg.C1[1], self.tg.M[0], self.tg.M[1])
 		angs1 = [ang_s1 + self.tg.arc1_dtheta * t for t in [i / 100.0 for i in range(101)]]
-		x1 = [self.tg.C1[0] + self.tg.a * math.cos(a) for a in angs1]
-		y1 = [self.tg.C1[1] + self.tg.a * math.sin(a) for a in angs1]
-		ax.plot(x1, y1, color='k', lw=1.8, label='圆弧1')
-		# 大圆
-		R2 = 2 * self.tg.a
+		x1 = [self.tg.C1[0] + self.tg.R1 * math.cos(a) for a in angs1]
+		y1 = [self.tg.C1[1] + self.tg.R1 * math.sin(a) for a in angs1]
+		ax.plot(x1, y1, color='k', lw=1.8, label='圆弧1(2a)')
+		# 后续小圆弧（R2=a）
 		ang_s2 = TurnGeometry._angle(self.tg.C2[0], self.tg.C2[1], self.tg.M[0], self.tg.M[1])
 		ang_e2 = TurnGeometry._angle(self.tg.C2[0], self.tg.C2[1], self.tg.Pout[0], self.tg.Pout[1])
 		angs2 = [ang_s2 + self.tg.arc2_dtheta * t for t in [i / 100.0 for i in range(101)]]
-		x2 = [self.tg.C2[0] + R2 * math.cos(a) for a in angs2]
-		y2 = [self.tg.C2[1] + R2 * math.sin(a) for a in angs2]
+		x2 = [self.tg.C2[0] + self.tg.R2 * math.cos(a) for a in angs2]
+		y2 = [self.tg.C2[1] + self.tg.R2 * math.sin(a) for a in angs2]
 		ax.plot(x2, y2, color='k', lw=1.8, linestyle='-')
 		ax.grid(True, linestyle=':', linewidth=0.5)
 
@@ -341,6 +346,7 @@ def distance(p: Tuple[float, float], q: Tuple[float, float]) -> float:
 
 
 def solve_next_s_by_chord(path: CompositePath, s_curr: float, L: float) -> float:
+	"""在路径上从 s_curr 向前（s 增大方向）寻找与当前点弦长为 L 的下一个 s。"""
 	p0 = path.pos(s_curr)
 	# 先指数增大上界，直至 chord>=L
 	lo = s_curr + 1e-6
@@ -362,11 +368,40 @@ def solve_next_s_by_chord(path: CompositePath, s_curr: float, L: float) -> float
 	return 0.5 * (lo + hi)
 
 
+def solve_prev_s_by_chord(path: CompositePath, s_curr: float, L: float) -> float:
+	"""在路径上从 s_curr 向后（s 减小方向）寻找与当前点弦长为 L 的上一个 s。"""
+	p0 = path.pos(s_curr)
+	# 建立 [lo, hi] 区间，使得 d(lo)>=L, d(hi)<L，且 lo < hi < s_curr
+	hi = s_curr - 1e-6
+	lo = hi - max(L, 0.5)
+	for _ in range(60):
+		d = distance(p0, path.pos(lo))
+		if d >= L:
+			break
+		lo -= max(L, 0.5)
+	# 二分收缩区间
+	for _ in range(ITER_MAX):
+		mid = 0.5 * (lo + hi)
+		d = distance(p0, path.pos(mid))
+		if abs(d - L) < 1e-9:
+			return mid
+		if d >= L:
+			lo = mid
+		else:
+			hi = mid
+	return 0.5 * (lo + hi)
+
+
 def build_chain_on_path(path: CompositePath, s_head: float) -> Tuple[List[float], List[Tuple[float, float]]]:
+	"""从龙头开始，按“向后取”的方向依次得到龙身与龙尾的位置。
+	约定：索引递增对应 s 递减（越靠后 s 越小），满足题意在 t=0 时龙身仍在盘入侧。
+	"""
 	s_list: List[float] = [s_head]
-	s_list.append(solve_next_s_by_chord(path, s_list[-1], L_HEAD))
+	# 先取与龙头相距 L_HEAD 的第一节（向后，s 变小）
+	s_list.append(solve_prev_s_by_chord(path, s_list[-1], L_HEAD))
+	# 再连续向后取 N_BODY 节 + 尾前（共 N_BODY+1 次），每次间距 L_BODY
 	for _ in range(N_BODY + 1):  # 221 身体 + 尾前
-		s_list.append(solve_next_s_by_chord(path, s_list[-1], L_BODY))
+		s_list.append(solve_prev_s_by_chord(path, s_list[-1], L_BODY))
 	pts = [path.pos(s) for s in s_list]
 	return s_list, pts
 
